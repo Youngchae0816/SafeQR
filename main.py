@@ -1,13 +1,10 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
 
-# 요청/응답 데이터 형식 가져오기
-from models.schemas import URLRequest, URLAnalysisResponse
-
-# URL 구조 분석 함수 가져오기
+# 분석 기능 가져오기
 from services.url_analyzer import analyze_url_structure
-
-# 브랜드 유사도 분석 함수 가져오기
 from services.brand_similarity import analyze_brand_similarity
+from services.risk_scorer import calculate_risk
 
 
 # FastAPI 앱 생성
@@ -16,6 +13,11 @@ app = FastAPI(
     description="SafeQR 악성 URL 탐지 백엔드 서버",
     version="1.0.0"
 )
+
+
+# 안드로이드 앱에서 받을 데이터 형식
+class URLRequest(BaseModel):
+    url: str
 
 
 # 기본 주소 접속 테스트
@@ -35,72 +37,49 @@ def health_check():
 
 
 # URL 분석 API
-@app.post("/analyze", response_model=URLAnalysisResponse)
+@app.post("/analyze")
 def analyze_url(request: URLRequest):
 
     # 안드로이드 앱에서 전달받은 URL
     url = request.url
 
-    # 1. URL 자체 구조 분석
+    # 1. URL 어휘/구조 분석
     lexical_result = analyze_url_structure(url)
 
     # 2. 브랜드 유사도 분석
-    brand_similarity_result = analyze_brand_similarity(url)
+    brand_result = analyze_brand_similarity(url)
 
     # 3. 외부 위협 DB 분석
-    # 아직 구현 전
-    external_db_result = {
-        "score": 0,
-        "reasons": []
-    }
+    # 다른 팀원이 담당하므로 현재는 연결 전
+    external_db_result = None
 
     # 4. 도메인 신뢰도 분석
-    # 아직 구현 전
-    domain_trust_result = {
-        "score": 0,
-        "reasons": []
-    }
+    # 다른 팀원이 담당하므로 현재는 연결 전
+    domain_trust_result = None
 
-    # 현재 구현된 분석 점수를 합산
-    score = (
-        lexical_result["score"]
-        + brand_similarity_result["score"]
-        + external_db_result["score"]
-        + domain_trust_result["score"]
+    # 여러 분석 결과를 종합하여 최종 위험도 계산
+    risk_result = calculate_risk(
+        lexical=lexical_result,
+        brand_similarity=brand_result,
+        external_db=external_db_result,
+        domain_trust=domain_trust_result
     )
 
-    # 최종 점수는 최대 100점
-    score = min(score, 100)
-
-    # 위험도 판정
-    if score >= 40:
-        level = "danger"
-    elif score >= 20:
-        level = "warning"
-    else:
-        level = "safe"
-
-    # 각 분석에서 나온 탐지 이유 합치기
-    reasons = (
-        lexical_result["reasons"]
-        + brand_similarity_result["reasons"]
-        + external_db_result["reasons"]
-        + domain_trust_result["reasons"]
-    )
-
-    # 안드로이드 앱으로 전달할 최종 분석 결과
+    # 안드로이드 앱으로 전달할 최종 결과
     return {
         "url": url,
         "domain": lexical_result["domain"],
-        "score": score,
-        "level": level,
+        "score": risk_result["score"],
+        "level": risk_result["level"],
 
+        # 각 탐지 모듈의 세부 결과
         "analysis": {
             "lexical": lexical_result,
-            "brand_similarity": brand_similarity_result,
+            "brand_similarity": brand_result,
             "external_db": external_db_result,
             "domain_trust": domain_trust_result
         },
 
-        "reasons": reasons
+        # 최종 위험 판단 근거
+        "reasons": risk_result["reasons"]
     }
