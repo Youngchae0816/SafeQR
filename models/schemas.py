@@ -33,8 +33,8 @@ class DomainTrustResult(BaseModel):
 class AnalysisResult(BaseModel):
     lexical: AnalysisDetail
     brand_similarity: AnalysisDetail
-    external_db: ExternalDBResult
-    domain_trust: DomainTrustResult
+    external_db: ExternalDBResult | None = None
+    domain_trust: DomainTrustResult | None = None
 
 
 # 앱으로 최종 반환할 결과 형식
