@@ -4,7 +4,7 @@
 # 최종 위험 점수와 위험 등급을 계산하는 모듈
 
 
-def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=None):
+def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=None, page=None):
     """
     각 탐지 모듈의 결과를 받아 최종 위험도를 계산한다.
 
@@ -12,6 +12,7 @@ def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=Non
     brand_similarity : 브랜드 유사도 분석 결과
     external_db      : 외부 위협 DB 분석 결과 (팀원 담당)
     domain_trust     : 도메인 신뢰도 분석 결과 (팀원 담당)
+    page             : 페이지 내용(HTML) 분석 결과
     """
 
     # 최종 점수
@@ -41,6 +42,12 @@ def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=Non
     if domain_trust:
         total_score += domain_trust.get("score", 0)
         all_reasons.extend(domain_trust.get("reasons", []))
+
+    # 5. 페이지 내용 분석 결과
+    # 사이트 접속에 실패하면 결과가 없으므로 들어왔을 때만 반영
+    if page:
+        total_score += page.get("score", 0)
+        all_reasons.extend(page.get("reasons", []))
 
     # 점수가 100점을 넘지 않도록 제한
     total_score = min(total_score, 100)

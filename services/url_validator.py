@@ -17,6 +17,13 @@ def validate_url(url: str):
             "reason": "URL이 비어 있습니다."
         }
 
+    # 비정상적으로 긴 입력 차단 (브라우저가 처리하는 주소 길이도 보통 이 정도)
+    if len(url) > 2048:
+        return {
+            "valid": False,
+            "reason": "URL이 너무 깁니다."
+        }
+
     # URL 구조 분석
     try:
         parsed = urlparse(url)
