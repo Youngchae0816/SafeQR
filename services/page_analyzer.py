@@ -54,6 +54,9 @@ EXFIL_PATTERNS = ["api.telegram.org/bot", "discord.com/api/webhooks", "discordap
 SOCIAL_LINKS = ("facebook.com/", "instagram.com/", "twitter.com/", "x.com/", "linkedin.com/", "youtube.com/",
                 "tiktok.com/", "pinterest.com/", "blog.naver.com/", "pf.kakao.com/", "t.me/", "discord.gg/")
 
+# 봇 차단 페이지 제목 (서버 접속이 막혀 진짜 내용이 아닌 차단 화면을 받은 경우)
+CHALLENGE_TITLES = ("attention required! | cloudflare", "just a moment...", "access denied", "403 forbidden", "ddos-guard")
+
 # 코드를 숨길 때 쓰는 자바스크립트 함수
 OBFUSCATION_PATTERNS = ["eval(", "atob(", "unescape(", "fromcharcode(", "document.write("]
 
@@ -355,6 +358,11 @@ def clean_text(text: str, limit: int = 200):
     return text[:limit] or None
 
 
+def is_challenge_page(html):
+    title = re.search(r"<title[^>]*>(.*?)</title>", html or "", re.IGNORECASE | re.DOTALL)
+    return bool(title) and (clean_text(title.group(1)) or "").lower().startswith(CHALLENGE_TITLES)
+
+
 # 인증서에서 발급기관과 발급일 꺼내기
 def certificate_info(cert):
     if not cert:
@@ -406,6 +414,12 @@ def analyze_page(url: str):
         return None
     except Exception as e:
         print(f"페이지 접속 실패 ({url}): {e}")
+        return None
+
+    # 봇 차단 화면을 받았으면 진짜 페이지를 못 본 것이므로 접속 실패와 똑같이 처리
+    # (차단 화면에는 버튼만 있고 SNS·저작권이 없어서 정상 사이트도 "급조된 페이지"로 오해함)
+    if is_challenge_page(page["html"]):
+        print(f"봇 차단 페이지 ({url})")
         return None
 
     score = 0

@@ -350,6 +350,13 @@ cafe_html = ('<html><meta name="description" content="cafe"><a href="https://ins
              '<button>Order</button> &copy; 2026</html>')
 assert any("입력 버튼만" in r for r in inspect_html(phish_html, "https://abc.pages.dev/")[1])
 assert not any("입력 버튼만" in r for r in inspect_html(cafe_html, "https://cafe.com/")[1])
+
+# 봇 차단 화면은 분석하지 않음
+from services.page_analyzer import is_challenge_page
+
+assert is_challenge_page("<title>Attention Required! | Cloudflare</title><button>x</button>")
+assert is_challenge_page("<TITLE> Just a moment...</TITLE>")
+assert not is_challenge_page(phish_html) and not is_challenge_page("<title></title>") and not is_challenge_page(None)
 print("페이지 내용 규칙 확인 통과")
 
 # 위험한 주소는 페이지 분석으로 접속하지 않음
