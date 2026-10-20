@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,6 +11,9 @@ from services.brand_similarity import analyze_brand_similarity
 from services.risk_scorer import calculate_risk
 from services.url_validator import validate_url
 from services.error_handler import global_exception_handler
+
+# Google Safe Browsing API 연결
+from services.external_api import check_url_safety
 
 
 # FastAPI 앱 생성
@@ -71,15 +75,14 @@ def analyze_url(request: URLRequest):
     # 2. 브랜드 유사도 분석
     brand_result = analyze_brand_similarity(url)
 
-    # 3. 외부 위협 DB 분석
-    # 다른 팀원이 담당하므로 현재는 연결 전
-    external_db_result = None
+    # 3. Google Safe Browsing API 분석
+    external_db_result = check_url_safety(url)
 
     # 4. 도메인 신뢰도 분석
-    # 다른 팀원이 담당하므로 현재는 연결 전
+    # 아직 구현 전
     domain_trust_result = None
 
-    # 여러 분석 결과를 종합하여 최종 위험도 계산
+    # 5. 여러 분석 결과를 종합하여 최종 위험도 계산
     risk_result = calculate_risk(
         lexical=lexical_result,
         brand_similarity=brand_result,
@@ -87,7 +90,7 @@ def analyze_url(request: URLRequest):
         domain_trust=domain_trust_result
     )
 
-    # 안드로이드 앱으로 전달할 최종 결과
+    # 6. 안드로이드 앱으로 전달할 최종 결과
     return {
         "url": url,
         "domain": lexical_result["domain"],
