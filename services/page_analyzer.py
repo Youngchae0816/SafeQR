@@ -11,7 +11,10 @@ import time
 from html import unescape
 from urllib.parse import urljoin, urlparse
 
-from services.url_analyzer import analyze_url_structure, extract_domain, is_user_content_platform
+from services.url_analyzer import (
+    ARCHIVE_EXTENSIONS, CPU_ARCH_NAMES, DANGEROUS_EXTENSIONS,
+    analyze_url_structure, extract_domain, is_user_content_platform,
+)
 from services.brand_similarity import BRANDS, analyze_brand_similarity, is_official
 
 
@@ -46,6 +49,10 @@ KOREAN_NAMES = {
 
 # 훔친 정보를 바로 빼돌리는 곳 (피싱 키트가 많이 씀)
 EXFIL_PATTERNS = ["api.telegram.org/bot", "discord.com/api/webhooks", "discordapp.com/api/webhooks"]
+
+# 정상 사이트에 흔한 SNS 링크 (없으면 급조된 페이지일 가능성)
+SOCIAL_LINKS = ("facebook.com/", "instagram.com/", "twitter.com/", "x.com/", "linkedin.com/", "youtube.com/",
+                "tiktok.com/", "pinterest.com/", "blog.naver.com/", "pf.kakao.com/", "t.me/", "discord.gg/")
 
 # 코드를 숨길 때 쓰는 자바스크립트 함수
 OBFUSCATION_PATTERNS = ["eval(", "atob(", "unescape(", "fromcharcode(", "document.write("]
@@ -239,13 +246,89 @@ def inspect_html(html: str, page_url: str) -> tuple:
                 reasons.append(f"입력한 정보를 다른 사이트({target})로 보냅니다.")
                 break
 
-    # 4) 내용은 거의 없고 숨겨진 코드만 있음
+    # 4) 사이트 운영 흔적 없이 입력만 받는 페이지 (Chibueze 2026 특징 중요도 1~4위)
+    # 정상 사이트는 SNS 링크·저작권 표시·메타 설명을 갖추지만 급조된 피싱 페이지는 빠뜨림
+    # 측정: 셋 다 없는 비율 피싱 54% / 정상 20%, 입력 버튼까지 있으면 정상 오탐 0 (새 피싱 450개 +8)
+    hrefs = re.findall(r"<a[^>]+href\s*=\s*[\"']([^\"']*)", lower)
+    has_social = any(s in h for h in hrefs for s in SOCIAL_LINKS)
+    has_copyright = "©" in html or "&copy;" in lower or "copyright" in lower
+    has_description = re.search(r"<meta[^>]+name\s*=\s*[\"']description[\"']", lower) is not None
+    has_submit = re.search(r"type\s*=\s*[\"']?submit|<button", lower) is not None
+    if has_submit and not (has_social or has_copyright or has_description):
+        score += 15
+        reasons.append("SNS 링크, 저작권 표시, 사이트 설명 없이 입력 버튼만 있는 페이지입니다.")
+
+    # 5) 내용은 거의 없고 숨겨진 코드만 있음
     visible_text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", lower, flags=re.DOTALL)
     if len(visible_text.split()) < 30 and any(p in lower for p in OBFUSCATION_PATTERNS):
         score += 20
         reasons.append("내용 없이 내용을 숨기는 코드만 있는 페이지입니다.")
 
     return score, reasons
+
+
+# 페이지 안 링크(<a href>) 개수 (javascript:, mailto:, tel: 제외)
+# 측정: 피싱 페이지 중앙값 2개, 정상 사이트 37개
+def count_links(html: str) -> int:
+    links = re.findall(r"<a[^>]+href\s*=\s*[\"']([^\"'#]+)", html.lower())
+    return sum(not l.startswith(("javascript:", "mailto:", "tel:")) for l in links)
+
+
+# robots.txt(검색 엔진 안내 파일)가 있는지 (Tran & Sovilj 2024: sitemap 개수 중요도 5위)
+# 측정: 정상 사이트 81%가 있고, 피싱 사이트는 48%만 있음
+# True/False, 확인하지 못하면 None
+def has_robots_txt(page_url: str):
+    p = urlparse(page_url)
+    url = f"{p.scheme}://{p.netloc}/robots.txt"
+    try:
+        for _ in range(2):  # http -> https 같은 이동 1번까지
+            p = urlparse(url)
+            https = p.scheme == "https"
+            port = p.port or (443 if https else 80)
+            ip = resolve_public_ip(p.hostname, port)   # 내부망 차단 동일하게 적용
+            conn = (PinnedHTTPSConnection if https else PinnedHTTPConnection)(p.hostname, ip, port=port, timeout=TIMEOUT)
+            try:
+                conn.request("GET", p.path, headers=HEADERS)
+                response = conn.getresponse()
+                location = response.getheader("Location")
+                if response.status in (301, 302, 307, 308) and location:
+                    url = urljoin(url, location)
+                    continue
+                if response.status != 200:
+                    return False
+                return "user-agent" in response.read(100_000).decode(errors="ignore").lower()
+            finally:
+                conn.close()
+        return False
+    except Exception:
+        return None
+
+
+# 접속하면 악성 파일을 받게 될 수 있는 주소인지 (IP 주소, 실행 파일, 압축 파일, IoT 악성코드 파일명)
+def is_risky_download(url: str) -> bool:
+    parsed = urlparse(url)
+    try:
+        ipaddress.ip_address(parsed.hostname or "")
+        return True
+    except ValueError:
+        pass
+    filename = parsed.path.rsplit("/", 1)[-1].lower()
+    extension = filename.rsplit(".", 1)[-1] if "." in filename else ""
+    return extension in DANGEROUS_EXTENSIONS | ARCHIVE_EXTENSIONS | CPU_ARCH_NAMES or filename in CPU_ARCH_NAMES
+
+
+# 빈약한 페이지 규칙: 링크 3개 미만 + robots.txt 없음 + 도메인이 1년 미만이거나 나이 확인 안 됨 -> +15점
+# 피싱 키트는 로그인 화면 하나만 있고 검색 엔진 설정이 없음
+# wordpress.com, weibo.com 같은 오래된 대형 사이트는 봇에게 빈 페이지를 주기도 해서 1년 이상 된 도메인은 제외
+# (측정: 새 피싱 450개 중 +10개 탐지, 정상 844개 오탐 0)
+# 도메인 나이(WHOIS)는 페이지 분석과 동시에 실행되므로 둘 다 끝난 뒤 main.py에서 호출
+def apply_sparse_page_rule(page, domain_trust):
+    if not page or not page.pop("sparse_page", False):
+        return
+    if domain_trust and domain_trust["domain_age_days"] >= 365:
+        return
+    page["score"] = min(page["score"] + 15, 100)
+    page["reasons"].append("링크가 거의 없고 검색 엔진 설정(robots.txt)도 없는, 급조된 것 같은 페이지입니다.")
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +393,11 @@ def extract_metadata(page: dict) -> dict:
 
 def analyze_page(url: str):
 
+    # IP 주소, 실행 파일, 압축 파일 주소는 접속하지 않음 (Rafsanjani 2024: 악성 파일 다운로드 방지)
+    # 이런 주소는 URL 분석만으로 이미 높은 점수를 받음
+    if is_risky_download(url):
+        return {"score": 0, "final_url": url, "reasons": [], "metadata": None, "sparse_page": False}
+
     # 접속 실패, 내부망 주소 차단 등은 이 검사만 빼고 분석 계속
     try:
         page = fetch_page(url)
@@ -342,14 +430,25 @@ def analyze_page(url: str):
         score += 20
         reasons.append("HTTPS 인증서가 올바르지 않습니다. 브라우저도 경고하는 사이트입니다.")
 
+    link_count = robots = None
     if page["html"]:
         html_score, html_reasons = inspect_html(page["html"], final_url)
         score += html_score
         reasons += html_reasons
 
+        # robots.txt는 링크가 적은 페이지일 때만 확인 (요청 1번 추가)
+        link_count = count_links(page["html"])
+        if link_count < 3:
+            robots = has_robots_txt(final_url)
+
+    metadata = extract_metadata(page)
+    metadata["link_count"] = link_count
+    metadata["has_robots_txt"] = robots
+
     return {
         "score": min(score, 100),
         "final_url": final_url,
         "reasons": reasons,
-        "metadata": extract_metadata(page)
+        "metadata": metadata,
+        "sparse_page": link_count is not None and link_count < 3 and robots is False,
     }

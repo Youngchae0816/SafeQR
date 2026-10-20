@@ -2,9 +2,9 @@ import json
 import os
 import urllib.request
 from datetime import date, datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
-from services.url_analyzer import extract_domain
+from services.url_analyzer import extract_domain, is_user_content_platform
 
 
 # .kr 도메인 조회용 (공공데이터포털 - 한국인터넷진흥원 WHOIS)
@@ -12,6 +12,10 @@ KISA_WHOIS_URL = "https://apis.data.go.kr/B551505/whois/domain_name?"
 
 # .com 등 해외 도메인 조회용 (RDAP: WHOIS의 공식 후속 표준, 키 필요 없음)
 RDAP_URL = "https://rdap.org/domain/"
+RDAP_HEADERS = {
+    "User-Agent": "SafeQR/1.0 (+https://github.com/Youngchae0816/SafeQR)",
+    "Accept": "application/rdap+json",
+}
 
 # 이 기간보다 최근에 만들어진 도메인은 위험 신호로 봄
 # (피싱 사이트는 대부분 만든 지 며칠~몇 주 안에 사용되고 버려짐)
@@ -34,7 +38,9 @@ def get_registration_date(domain: str, suffix: str):
         return datetime.strptime(reg_date.strip(), "%Y. %m. %d.").date()
 
     # 그 외 -> RDAP
-    with urllib.request.urlopen(RDAP_URL + domain, timeout=5) as response:
+    # 프로그램 이름표(User-Agent)가 없으면 .org 등 일부 등록 기관이 거부함(403)
+    request = urllib.request.Request(RDAP_URL + domain, headers=RDAP_HEADERS)
+    with urllib.request.urlopen(request, timeout=5) as response:
         data = json.load(response)
     for event in data.get("events", []):
         if event.get("eventAction") == "registration":
@@ -48,9 +54,10 @@ def check_domain_trust(url: str):
 
     ext = extract_domain(url)
 
-    # IP 주소이거나, pages.dev 같은 무료 호스팅이면 조회할 도메인이 없음
-    # (무료 호스팅은 pages.dev 자체의 나이가 나와서 의미가 없음)
-    if not ext.domain or not ext.suffix or ext.is_private:
+    # IP 주소이거나, 무료 호스팅·파일 공유 같은 사용자 콘텐츠 플랫폼이면 조회하지 않음
+    # (godaddysites.com, netlify.app 같은 플랫폼 자체의 나이가 나와서 피싱도 "오래된 도메인"이 됨)
+    host = (urlparse(url).hostname or "").lower()
+    if not ext.domain or not ext.suffix or ext.is_private or is_user_content_platform(host):
         return None
 
     domain = f"{ext.domain}.{ext.suffix}"

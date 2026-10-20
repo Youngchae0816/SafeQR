@@ -341,3 +341,22 @@ except HTTPException as e:
     assert e.status_code == 429
 
 print("SSRF 차단, 호출 제한 확인 통과")
+
+# 페이지 내용 규칙 확인 (HTML 문자열로, 인터넷 없이)
+from services.page_analyzer import inspect_html
+
+phish_html = '<html><title>Sign in</title><form><input type="email"><button>Next</button></form></html>'
+cafe_html = ('<html><meta name="description" content="cafe"><a href="https://instagram.com/cafe">ig</a>'
+             '<button>Order</button> &copy; 2026</html>')
+assert any("입력 버튼만" in r for r in inspect_html(phish_html, "https://abc.pages.dev/")[1])
+assert not any("입력 버튼만" in r for r in inspect_html(cafe_html, "https://cafe.com/")[1])
+print("페이지 내용 규칙 확인 통과")
+
+# 위험한 주소는 페이지 분석으로 접속하지 않음
+from services.page_analyzer import is_risky_download
+
+for url in ["http://42.5.9.216:40499/bin.sh", "https://a.com/clip.exe", "https://a.com/x.zip", "http://a.com/bin/manta.mips"]:
+    assert is_risky_download(url), url
+for url in ["https://toss.im", "https://a.com/menu.html", "https://a.com/"]:
+    assert not is_risky_download(url), url
+print("위험 주소 접속 차단 확인 통과")

@@ -1,5 +1,7 @@
 import ipaddress
+import math
 import re
+from collections import Counter
 import unicodedata
 from urllib.parse import unquote, urlparse
 
@@ -64,7 +66,7 @@ FREE_HOSTING = {
     "vercel.app", "pages.dev", "workers.dev", "netlify.app", "replit.app", "github.io", "gitlab.io",
     "blogspot.com", "web.app", "firebaseapp.com", "glitch.me", "onrender.com", "herokuapp.com",
     "weebly.com", "wixsite.com", "webflow.io", "square.site", "godaddysites.com", "notion.site",
-    "framer.website", "bolt.host", "craftum.io", "freepage.cc", "000webhostapp.com", "mybluehost.me",
+    "framer.website", "framer.app", "bolt.host", "craftum.io", "freepage.cc", "000webhostapp.com", "mybluehost.me",
     "sites.google.com", "storage.googleapis.com", "amazonaws.com", "r2.dev", "backblazeb2.com", "myqcloud.com",
 }
 
@@ -83,6 +85,9 @@ USER_CONTENT_PLATFORMS = FREE_HOSTING | {
     # 붙여넣기 사이트
     "pastebin.com", "paste.ee",
 }
+
+# 주소 앞부분에 단어로 넣으면 다른 주소처럼 보이게 하는 TLD 단어
+EMBEDDED_TLD_WORDS = {"com", "net", "org", "gov", "edu"}
 
 # 주소 안에 들어 있는 이메일 주소: 피싱 페이지가 피해자 이메일을 미리 채워 넣는 수법
 # 예) ...pages.dev/#victim@company.com
@@ -108,6 +113,12 @@ def looks_random(word: str) -> bool:
         return False
     switches = sum(a.isdigit() != b.isdigit() for a, b in zip(word, word[1:]))
     return switches >= 2
+
+
+# 글자가 얼마나 무작위로 섞여 있는지 (섀넌 엔트로피, 클수록 무작위)
+# 예) google 1.9, coupang 2.8, wbeuvipfx75 3.5
+def entropy(text: str) -> float:
+    return -sum(c / len(text) * math.log2(c / len(text)) for c in Counter(text).values())
 
 
 # 다른 나라 글자로 영어를 흉내 낸 주소인지 (аpple.com: 첫 글자가 러시아어 а)
@@ -238,6 +249,43 @@ def analyze_url_structure(url: str):
     if any(looks_random(name) for name in names):
         score += 15
         reasons.append("숫자와 글자가 무작위로 섞인 주소입니다.")
+
+    # 도메인 이름 부분 (IP 주소는 6번에서 따로 검사, xn-- 로 시작하는 다국어 도메인은 제외)
+    name = ext.domain.lower() if ext.suffix else ""
+    if name.startswith("xn--"):
+        name = ""
+
+    # 11-1. 무료 호스팅 + 무작위 글자 이름 (Tran & Sovilj 2024 엔트로피 특징)
+    # 모든 주소에 적용하면 google-analytics.com 같은 긴 정상 도메인이 걸려서 무료 호스팅에만 적용
+    # (측정: 새 피싱 450개 탐지율 +9.3%p, 정상 1만 개 오탐 변화 0)
+    if host_in(host, FREE_HOSTING) and len(name) >= 8 and entropy(name) >= 3.3:
+        score += 15
+        reasons.append("무료 호스팅 주소의 이름이 무작위 글자로 되어 있습니다.")
+
+    # 11-2. 도메인 숫자 비율 (Tran & Sovilj 2024 특징 중요도 2위)
+    if len(name) >= 6 and sum(c.isdigit() for c in name) / len(name) >= 0.3:
+        score += 10
+        reasons.append("도메인 이름에 숫자가 비정상적으로 많습니다.")
+
+    # 11-3. 비정상적으로 긴 도메인 이름 (Tran & Sovilj 2024 특징 중요도 7위 "도메인 길이")
+    # 20자는 samsungcloudsolution.com 같은 정상 도메인이 걸려서 25자부터
+    if len(name) >= 25:
+        score += 10
+        reasons.append("도메인 이름이 비정상적으로 깁니다.")
+
+    # 11-4. 주소 안에 다른 주소 끝(.com, gov 등)을 단어로 넣은 경우 (Tran & Sovilj 2024 "URL 안 TLD 개수")
+    # 예) info-hacienda-gov.weebly.com, customer-mail-com.weebly.com
+    # (kr, app, io 등은 정상 국내/서비스 도메인에도 흔해서 제외)
+    name_words = re.split(r"[.-]", f"{ext.subdomain}.{name}".lower())
+    if any(w in EMBEDDED_TLD_WORDS for w in name_words):
+        score += 15
+        reasons.append("주소 앞부분에 다른 주소(.com, gov 등)처럼 보이는 단어를 넣었습니다.")
+
+    # 11-5. 서브도메인 깊이 (Arpita 2026 XPhishNet 핵심 판별 지표)
+    # 예) login.my.gov.au-taxpayer.de5.net (www 제외)
+    if len([s for s in ext.subdomain.split(".") if s and s != "www"]) >= 3:
+        score += 10
+        reasons.append("주소 앞부분이 여러 단계로 깊게 이어져 있습니다.")
 
     # 12. 다른 나라 글자로 영어 주소를 흉내 냈는지 검사
     if is_homograph(host):

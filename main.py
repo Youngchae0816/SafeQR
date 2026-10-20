@@ -23,7 +23,7 @@ from services.url_analyzer import analyze_url_structure
 from services.brand_similarity import analyze_brand_similarity
 from services.external_db import check_external_db
 from services.domain_trust import check_domain_trust
-from services.page_analyzer import analyze_page
+from services.page_analyzer import analyze_page, apply_sparse_page_rule
 from services.risk_scorer import calculate_risk
 from services.url_validator import validate_url
 from services.error_handler import global_exception_handler
@@ -120,13 +120,17 @@ def analyze_url(request: URLRequest, http_request: Request):
     domain_trust_result = domain_trust_job.result()
     page_result = page_job.result()
 
+    # 페이지 분석과 도메인 나이를 함께 봐야 하는 규칙 (둘 다 끝난 뒤 적용)
+    apply_sparse_page_rule(page_result, domain_trust_result)
+
     # 여러 분석 결과를 종합하여 최종 위험도 계산
     risk_result = calculate_risk(
         lexical=lexical_result,
         brand_similarity=brand_result,
         external_db=external_db_result,
         domain_trust=domain_trust_result,
-        page=page_result
+        page=page_result,
+        compensate_missing=True
     )
 
     # 안드로이드 앱으로 전달할 최종 결과

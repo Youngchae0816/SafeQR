@@ -1,7 +1,7 @@
 import re
 from urllib.parse import urlparse
 
-from services.url_analyzer import extract_domain, RISKY_TLDS
+from services.url_analyzer import extract_domain, CHEAP_TLDS, RISKY_TLDS
 
 
 # 비교할 주요 브랜드 목록
@@ -169,7 +169,8 @@ def is_official(ext) -> bool:
         ext.domain in BRANDS
         and not ext.is_private
         and ext.suffix not in RISKY_TLDS
-        and (ext.suffix in OFFICIAL_SUFFIXES or ext.domain in GLOBAL_BRANDS)
+        # 나라별 공식 주소가 있는 브랜드도 저가 TLD(google.top 등)는 공식으로 보지 않음
+        and (ext.suffix in OFFICIAL_SUFFIXES or (ext.domain in GLOBAL_BRANDS and ext.suffix not in CHEAP_TLDS))
     )
 
 

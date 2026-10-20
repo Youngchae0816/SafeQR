@@ -49,6 +49,8 @@ class PageMetadata(BaseModel):
     https: bool = False                 # 암호화 연결 여부 (안전하다는 뜻은 아님)
     certificate: Optional[CertificateInfo] = None
     certificate_error: Optional[str] = None
+    link_count: Optional[int] = None        # 페이지 안 링크 개수
+    has_robots_txt: Optional[bool] = None   # 링크가 적을 때만 확인, 확인 안 했으면 null
 
 
 # 페이지 내용(HTML) 분석 결과 형식
