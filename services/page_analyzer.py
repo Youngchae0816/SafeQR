@@ -57,6 +57,11 @@ SOCIAL_LINKS = ("facebook.com/", "instagram.com/", "twitter.com/", "x.com/", "li
 # 봇 차단 페이지 제목 (서버 접속이 막혀 진짜 내용이 아닌 차단 화면을 받은 경우)
 CHALLENGE_TITLES = ("attention required! | cloudflare", "just a moment...", "access denied", "403 forbidden", "ddos-guard")
 
+# 단축 서비스가 이미 위험 링크로 막아 두고 보여주는 경고 화면
+SHORTENER_BLOCK_TITLES = ("warning! | there might be a problem with the requested link",  # bit.ly
+                          "warning! | the account that created this link")              # bit.ly
+SHORTENER_BLOCK_URLS = ("tinyurl.com/app/nospam/",)
+
 # 코드를 숨길 때 쓰는 자바스크립트 함수
 OBFUSCATION_PATTERNS = ["eval(", "atob(", "unescape(", "fromcharcode(", "document.write("]
 
@@ -358,9 +363,17 @@ def clean_text(text: str, limit: int = 200):
     return text[:limit] or None
 
 
-def is_challenge_page(html):
+def page_title(html):
     title = re.search(r"<title[^>]*>(.*?)</title>", html or "", re.IGNORECASE | re.DOTALL)
-    return bool(title) and (clean_text(title.group(1)) or "").lower().startswith(CHALLENGE_TITLES)
+    return (clean_text(title.group(1)) or "").lower() if title else ""
+
+
+def is_challenge_page(html):
+    return page_title(html).startswith(CHALLENGE_TITLES)
+
+
+def is_shortener_block(html, final_url):
+    return page_title(html).startswith(SHORTENER_BLOCK_TITLES) or any(p in final_url for p in SHORTENER_BLOCK_URLS)
 
 
 # 인증서에서 발급기관과 발급일 꺼내기
@@ -431,6 +444,12 @@ def analyze_page(url: str):
     # (gmail.com -> accounts.google.com 같은 정상 이동은 제외하기 위해 단축 URL 등에서 출발한 경우만)
     # 원래 주소보다 점수가 높아진 만큼만 더함 (같은 이유로 두 번 벌점 주지 않기)
     host = (urlparse(url).hostname or "").lower()
+
+    # 단축 서비스가 이미 위험 링크로 차단했으면 진짜 목적지를 볼 수 없으므로 그 판정을 그대로 씀
+    if is_user_content_platform(host) and is_shortener_block(page["html"], final_url):
+        score += 60
+        reasons.append("단축 URL 서비스가 이미 위험한 링크로 차단했습니다.")
+
     if is_user_content_platform(host) and registered_domain(final_url) != registered_domain(url):
         before = analyze_url_structure(url)["score"] + analyze_brand_similarity(url)["score"]
         lexical = analyze_url_structure(final_url)

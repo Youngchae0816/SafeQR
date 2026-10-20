@@ -357,6 +357,13 @@ from services.page_analyzer import is_challenge_page
 assert is_challenge_page("<title>Attention Required! | Cloudflare</title><button>x</button>")
 assert is_challenge_page("<TITLE> Just a moment...</TITLE>")
 assert not is_challenge_page(phish_html) and not is_challenge_page("<title></title>") and not is_challenge_page(None)
+
+# 단축 서비스가 차단한 링크
+from services.page_analyzer import is_shortener_block
+
+assert is_shortener_block("<title>Warning! | There might be a problem with the requested link</title>", "https://bit.ly/x")
+assert is_shortener_block("", "https://tinyurl.com/app/nospam/tinyurl.com/abc")
+assert not is_shortener_block("<title>GitHub</title>", "https://github.com/kamal")
 print("페이지 내용 규칙 확인 통과")
 
 # 위험한 주소는 페이지 분석으로 접속하지 않음

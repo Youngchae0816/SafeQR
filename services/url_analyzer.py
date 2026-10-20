@@ -75,6 +75,7 @@ USER_CONTENT_PLATFORMS = FREE_HOSTING | {
     # URL 단축
     "bit.ly", "tinyurl.com", "rebrand.ly", "goo.su", "t.co", "is.gd", "cutt.ly",
     "naver.me", "me2.do", "han.gl", "url.kr",
+    "qrco.de", "q-r.to", "l.ead.me",  # QR 코드 생성기 단축 주소
     # 코드 저장소
     "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org",
     # 파일 공유 / 클라우드
