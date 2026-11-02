@@ -3,4 +3,14 @@ services:
     name: safeqr-backend
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    # --proxy-headers: Render 프록시 뒤에서도 실제 사용자 IP를 알 수 있게 함 (IP별 호출 제한에 필요)
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips='*'
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # 키 값은 Render 화면에서 직접 입력 (GitHub에 올리지 않음)
+      - key: SAFE_BROWSING_API_KEY
+        sync: false
+      - key: KISA_WHOIS_API_KEY
+        sync: false

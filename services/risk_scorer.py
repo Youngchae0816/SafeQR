@@ -3,16 +3,51 @@
 
 # 여러 분석 결과를 종합하여 최종 위험도를 계산
 
+# 외부 검사 실패 보정
+MISSING_MIN_STRONG = 25
+MISSING_FACTOR = 1.3
 
-def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=None):
 
-    # 최종 위험 점수
+def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=None,
+                   page=None, compensate_missing=False):
+    """
+    각 탐지 모듈의 결과를 받아 최종 위험도를 계산한다.
+
+    lexical          : URL 어휘/구조 분석 결과
+    brand_similarity : 브랜드 유사도 분석 결과
+    external_db      : 외부 위협 DB 분석 결과
+    domain_trust     : 도메인 신뢰도 분석 결과
+    page             : 페이지 내용(HTML) 분석 결과
+    compensate_missing : 외부 검사 실패 시 보정 여부
+    """
+
+    # 최종 점수
     total_score = 0
 
     # 위험 판단 근거
     all_reasons = []
 
-    # 1. URL 구조 분석
+    # 0. 외부 검사 실패 보정
+    if compensate_missing:
+        missing = sum(
+            x is None for x in (external_db, domain_trust, page)
+        )
+
+        strongest = max(
+            (lexical or {}).get("score", 0),
+            (brand_similarity or {}).get("score", 0)
+        )
+
+        if missing and strongest >= MISSING_MIN_STRONG:
+            total_score += round(
+                strongest * (MISSING_FACTOR ** missing - 1)
+            )
+
+            all_reasons.append(
+                "일부 외부 검사를 할 수 없어, 가장 강한 위험 단서의 비중을 높였습니다."
+            )
+
+    # 1. URL 어휘/구조 분석
     if lexical:
         total_score += lexical.get("score", 0)
         all_reasons.extend(lexical.get("reasons", []))
@@ -26,44 +61,59 @@ def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=Non
     if external_db:
 
         status = external_db.get("status")
+        safe_browsing = external_db.get("safe_browsing")
 
-        if status == "danger":
-            # Google에서 알려진 악성 URL로 탐지한 경우
+        # Google Safe Browsing에서 악성 URL 탐지
+        if safe_browsing is True or status == "danger":
+
             total_score = max(total_score, 100)
 
-            all_reasons.append(
-                "Google Safe Browsing에서 악성 URL로 탐지되었습니다."
-            )
+            all_reasons.extend(external_db.get("reasons", []))
 
+            if not external_db.get("reasons"):
+                all_reasons.append(
+                    "Google Safe Browsing에서 악성 URL로 탐지되었습니다."
+                )
+
+        # 외부 API 오류
         elif status == "error":
-            # 외부 API 오류가 발생한 경우
-            # 정상 검사 결과와 구분하여 주의 처리
+
             total_score = max(total_score, 30)
 
             all_reasons.append(
                 "외부 악성 URL 검사에 실패하여 안전 여부를 확인할 수 없습니다."
             )
 
-        elif status == "safe":
-            # 알려진 위협이 탐지되지 않은 경우
-            # 기존 URL 분석 점수는 유지
-            pass
+        # 정상 검사 결과
+        else:
+            total_score += external_db.get("score", 0)
+            all_reasons.extend(external_db.get("reasons", []))
 
     # 4. 도메인 신뢰도 분석
     if domain_trust:
         total_score += domain_trust.get("score", 0)
         all_reasons.extend(domain_trust.get("reasons", []))
 
-    # 점수 최대 100점
-    total_score = min(total_score, 100)
+    # 5. 페이지 내용 분석
+    if page:
+        total_score += page.get("score", 0)
+        all_reasons.extend(page.get("reasons", []))
+
+    # 점수가 100점을 넘지 않도록 제한
+    total_score = max(0, min(total_score, 100))
 
     # 최종 위험 등급
     if total_score >= 60:
         level = "danger"
+
     elif total_score >= 30:
         level = "warning"
+
     else:
         level = "safe"
+
+    # 중복된 위험 판단 근거 제거
+    all_reasons = list(dict.fromkeys(all_reasons))
 
     return {
         "score": total_score,
