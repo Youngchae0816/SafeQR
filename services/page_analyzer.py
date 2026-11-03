@@ -62,6 +62,22 @@ SHORTENER_BLOCK_TITLES = ("warning! | there might be a problem with the requeste
                           "warning! | the account that created this link")              # bit.ly
 SHORTENER_BLOCK_URLS = ("tinyurl.com/app/nospam/",)
 
+# Cloudflare가 피싱으로 판정한 사이트에 띄우는 경고 화면
+CLOUDFLARE_PHISHING_TITLE = "suspected phishing | cloudflare"
+
+# 피싱 사이트가 검사 봇에게 진짜 화면 대신 보여주는 검색 포털 (클로킹)
+# 평가 세트에서 피싱 56개가 yahoo/bing/yandex로 이동, 정상은 0개
+CLOAK_PORTALS = {"yahoo.com", "bing.com", "yandex.com"}
+# 원래 포털로 연결되는 같은 회사 도메인
+CLOAK_EXCEPTIONS = {"aol.com", "yahoo.co.jp", "yahoo.net", "ymail.com", "rocketmail.com", "msn.com", "live.com",
+                    "microsoft.com", "yandex.ru", "ya.ru"}
+
+# 문서 열람으로 위장한 미끼 제목
+DOCUMENT_LURE = re.compile(r"^(pdf viewer|downloading document|adobe (acrobat|reader|document|pdf)|view (shared )?document|secure document)")
+
+# 따옴표 안에 든 .apk 파일 주소 (href="...app.apk", location.href='./x.apk?v=1')
+APK_LINK = re.compile(r"""["'][^"'\s<>]*\.apk(?:[?#][^"'\s<>]*)?["']""")
+
 # 코드를 숨길 때 쓰는 자바스크립트 함수
 OBFUSCATION_PATTERNS = ["eval(", "atob(", "unescape(", "fromcharcode(", "document.write("]
 
@@ -239,15 +255,29 @@ def inspect_html(html: str, page_url: str) -> tuple:
         score += 10
         reasons.append("비밀번호를 입력받는 페이지입니다.")
 
+    # 1-1) 문서 열람으로 위장한 미끼 화면: "PDF Viewer", "Downloading document....", Adobe_Installer.html
+    # (1,994개 평가 세트에서 피싱 +5, 정상 오탐 0)
+    if DOCUMENT_LURE.search(title) or "adobe_installer" in page_url.lower():
+        score += 20
+        reasons.append("문서 열람 화면처럼 꾸며 로그인이나 설치를 유도하는 페이지입니다.")
+
     # 2) 입력한 정보를 텔레그램/디스코드로 바로 보냄
     if any(p in lower for p in EXFIL_PATTERNS):
         score += 30
         reasons.append("입력한 정보를 텔레그램이나 디스코드로 몰래 보내는 코드가 있습니다.")
 
     # 3) 비밀번호 입력 폼이 전혀 다른 사이트로 전송됨
+    # 비밀번호 칸이 들어 있는 폼만 봄 (같은 페이지의 검색창이 google.com으로 가는 것은 제외)
+    # 닫는 </form>이 없는 엉성한 페이지는 페이지 전체의 폼을 봄
     if has_password:
         page_domain = registered_domain(page_url)
-        for action in re.findall(r"<form[^>]+action\s*=\s*[\"']([^\"']+)", lower):
+        forms = re.findall(r"<form([^>]*)>(.*?)</form>", lower, re.DOTALL)
+        if forms:
+            actions = [m.group(1) for attrs, body in forms if re.search(r"type\s*=\s*[\"']?password", body)
+                       for m in [re.search(r"action\s*=\s*[\"']([^\"']+)", attrs)] if m]
+        else:
+            actions = re.findall(r"<form[^>]+action\s*=\s*[\"']([^\"']+)", lower)
+        for action in actions:
             target = registered_domain(urljoin(page_url, action))
             if target and target != page_domain:
                 score += 20
@@ -266,7 +296,14 @@ def inspect_html(html: str, page_url: str) -> tuple:
         score += 15
         reasons.append("SNS 링크, 저작권 표시, 사이트 설명 없이 입력 버튼만 있는 페이지입니다.")
 
-    # 5) 내용은 거의 없고 숨겨진 코드만 있음
+    # 5) 앱 설치 파일(.apk)을 내려받게 하는 페이지 (링크, 스크립트 이동 모두)
+    # 2024년 국내 스미싱: lzv.bn2g.yachts 접속 -> /apk/nhis.apk 설치 유도 (KISA, Virus Bulletin 2025)
+    # 정상 앱은 플레이스토어로 보내므로 .apk 파일을 직접 주는 경우는 드묾
+    if APK_LINK.search(lower):
+        score += 30
+        reasons.append("앱 설치 파일(.apk)을 직접 내려받게 하는 페이지입니다. 공식 앱은 플레이스토어로 설치하세요.")
+
+    # 6) 내용은 거의 없고 숨겨진 코드만 있음
     visible_text = re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", lower, flags=re.DOTALL)
     if len(visible_text.split()) < 30 and any(p in lower for p in OBFUSCATION_PATTERNS):
         score += 20
@@ -450,6 +487,18 @@ def analyze_page(url: str):
         score += 60
         reasons.append("단축 URL 서비스가 이미 위험한 링크로 차단했습니다.")
 
+    # Cloudflare가 피싱 의심으로 막아 둔 사이트 (평가 세트 피싱 +4, 정상 오탐 0)
+    if page_title(page["html"]).startswith(CLOUDFLARE_PHISHING_TITLE):
+        score += 60
+        reasons.append("Cloudflare가 이미 피싱 의심 사이트로 차단했습니다.")
+
+    # 검사 봇에게는 검색 포털을 보여주고 진짜 화면을 숨기는 수법 (클로킹)
+    # 예) bwq-whatsapp.com -> yahoo.com (평가 세트 피싱 +40, 정상 오탐 0)
+    start = registered_domain(url)
+    if registered_domain(final_url) in CLOAK_PORTALS and start not in CLOAK_PORTALS | CLOAK_EXCEPTIONS:
+        score += 25
+        reasons.append("검사를 피하려고 검색 포털(Yahoo 등)로 돌려보내 진짜 화면을 숨기는 주소입니다.")
+
     if is_user_content_platform(host) and registered_domain(final_url) != registered_domain(url):
         before = analyze_url_structure(url)["score"] + analyze_brand_similarity(url)["score"]
         lexical = analyze_url_structure(final_url)
@@ -458,6 +507,14 @@ def analyze_page(url: str):
         if extra > 0:
             score += extra
             reasons += [f"최종 도착 주소({lexical['domain']}): {r}" for r in lexical["reasons"] + brand["reasons"]]
+    # 목록에 없는 단축 주소(zd.lc, s4w.in 등)에서 이동한 경우는 정상 이동도 많아서 브랜드 사칭만 다시 봄
+    # 예) zd.lc/abc -> roblox.com.et (평가 세트 피싱 +5, 정상 오탐 0)
+    elif registered_domain(final_url) != registered_domain(url):
+        brand = analyze_brand_similarity(final_url)
+        extra = brand["score"] - analyze_brand_similarity(url)["score"]
+        if extra > 0:
+            score += extra
+            reasons += [f"최종 도착 주소({registered_domain(final_url)}): {r}" for r in brand["reasons"]]
 
     if page["cert_error"]:
         score += 20

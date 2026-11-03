@@ -84,6 +84,16 @@ RISKY_URLS = [
     "https://pay-pal-friday.net/",
     "https://mmilegal.co.za/public/amazon/login.php",
     "http://xn--pple-43d.com",
+    # 2024년 한국 스미싱 실제 사례 (KISA, Virus Bulletin 2025): 기관 사칭, 청첩장(N-Pay) 사칭
+    "http://lzv.bn2g.yachts",
+    "http://efs.tg9m.one",
+    "http://gov.kn1d.lat",
+    "https://9bbaa.n-payefof.shop/f.html",
+    "https://j7jn6.n-paylity.shop/ehg.html",
+    # 무료 호스팅에 네이버·카카오 이름을 섞은 실제 피싱 (phishing-filter)
+    "https://nidnaver787420666.weebly.com",
+    "https://kkakakakakakakaokaka.weebly.com",
+    "https://santanderweb.dothome.co.kr",
     # 악성코드 배포 (URLhaus 실제 사례)
     "http://42.5.9.216:40499/bin.sh",
     "http://115.62.145.147:34979/i",
@@ -351,6 +361,13 @@ cafe_html = ('<html><meta name="description" content="cafe"><a href="https://ins
 assert any("입력 버튼만" in r for r in inspect_html(phish_html, "https://abc.pages.dev/")[1])
 assert not any("입력 버튼만" in r for r in inspect_html(cafe_html, "https://cafe.com/")[1])
 
+# .apk 직접 다운로드 페이지 (국내 스미싱 유포지 구조)
+apk_html = "<html><script>window.location.href='/apk/nhis.apk';</script></html>"
+store_html = '<html><a href="https://play.google.com/store/apps/details?id=com.nhn.android.search">앱 받기</a></html>'
+assert any(".apk" in r for r in inspect_html(apk_html, "http://lzv.bn2g.yachts/")[1])
+assert any(".apk" in r for r in inspect_html('<a href="https://x.com/app.apk?v=2">', "https://x.com/")[1])
+assert not any(".apk" in r for r in inspect_html(store_html, "https://naver.com/")[1])
+
 # 봇 차단 화면은 분석하지 않음
 from services.page_analyzer import is_challenge_page
 
@@ -365,6 +382,67 @@ assert is_shortener_block("<title>Warning! | There might be a problem with the r
 assert is_shortener_block("", "https://tinyurl.com/app/nospam/tinyurl.com/abc")
 assert not is_shortener_block("<title>GitHub</title>", "https://github.com/kamal")
 print("페이지 내용 규칙 확인 통과")
+
+# 문서 미끼 제목, Cloudflare 피싱 경고, 검색 포털로 돌려보내기 (인터넷 없이 가짜 접속 결과로 확인)
+import services.page_analyzer as pa
+
+assert any("문서 열람" in r for r in inspect_html("<title>PDF Viewer</title>", "https://x.com/")[1])
+
+# 비밀번호 폼이 다른 사이트로 전송: 같은 페이지의 검색창(google.com)은 제외
+search_and_login = ('<form action="https://www.google.com/search"><input name="q"></form>'
+                    '<form action="/login"><input type="password"></form>')
+steal = '<form action="https://evil.top/save.php"><input type="password"></form>'
+assert not any("다른 사이트" in r for r in inspect_html(search_and_login, "https://onlinejudge.org/")[1])
+assert any("다른 사이트" in r for r in inspect_html(steal, "https://abc.com/")[1])
+assert not any("문서 열람" in r for r in inspect_html("<title>Adobe 채용</title>", "https://adobe.com/")[1])
+real_fetch, real_robots = pa.fetch_page, pa.has_robots_txt
+pa.has_robots_txt = lambda url: True
+for start, final, title, expect in [
+    ("http://bwq-whatsapp.com", "https://www.yahoo.com/", "Yahoo", "검색 포털"),
+    ("https://webasdhf.com/", "https://webasdhf.com/", "Suspected Phishing | Cloudflare", "Cloudflare"),
+    ("https://aol.com/", "https://www.yahoo.com/", "Yahoo", None),
+    # 목록에 없는 단축 주소 -> 브랜드 사칭 도메인 / 정상 이동(gmail -> google)은 그대로
+    ("https://zd.lc/nYgev", "https://www.roblox.com.et/games/1", "Blox Fruits", "최종 도착 주소"),
+    ("https://gmail.com/", "https://accounts.google.com/", "Gmail", None),
+]:
+    pa.fetch_page = lambda u, f=final, t=title: {"final_url": f, "chain": [u, f], "html": f"<title>{t}</title>",
+                                                 "content_type": "text/html", "cert": None, "cert_error": None}
+    reasons = pa.analyze_page(start)["reasons"]
+    assert (any(expect in r for r in reasons) if expect else not reasons), (start, reasons)
+pa.fetch_page, pa.has_robots_txt = real_fetch, real_robots
+
+# 해킹된 워드프레스 폴더의 html (단독으로는 주의가 안 되는 25점)
+from services.url_analyzer import analyze_url_structure
+
+assert analyze_url_structure("https://centres-sociaux58.fr/wp-includes/indfx.html")["score"] == 25
+assert analyze_url_structure("https://blog.example.com/wp-content/uploads/2024/photo.jpg")["score"] == 0
+print("워드프레스 폴더 규칙 확인 통과")
+
+# 다국어 도메인: 키릴 문자로 흉내 낸 브랜드, 한글 도메인의 브랜드 이름
+from services.brand_similarity import analyze_brand_similarity
+
+for domain, expect in [("аррӏе.com", 40), ("pаypal.com", 40), ("nаver.com", 40), ("쿠팡이벤트.com", 30),
+                       ("네이버.com", 20), ("münchen.de", 0), ("bücher.de", 0), ("맛집.com", 0)]:
+    got = analyze_brand_similarity("https://" + domain.encode("idna").decode() + "/")["score"]
+    assert got == expect, (domain, got)
+assert analyze_brand_similarity("https://allegro.pl/")["score"] == 0
+assert analyze_brand_similarity("https://allegrolokalnie.pl74243.top/")["score"] > 0
+print("다국어 도메인·브랜드 확인 통과")
+
+# 다른 사이트로 이동하면 도착 주소도 Safe Browsing 조회 (인터넷 없이 가짜 결과로 확인)
+import main
+from types import SimpleNamespace
+from models.schemas import URLRequest
+
+real = main.analyze_page, main.check_external_db, main.check_domain_trust
+main.analyze_page = lambda u: {"score": 0, "final_url": "https://scanned.page/EmpV8H", "reasons": [], "metadata": None, "sparse_page": False}
+main.check_external_db = lambda u: {"score": 100 if "scanned.page" in u else 0, "safe_browsing": "scanned.page" in u,
+                                    "reasons": ["Google Safe Browsing에 위험 사이트로 등록되어 있습니다."] if "scanned.page" in u else []}
+main.check_domain_trust = lambda u: None
+result = main.analyze_url(URLRequest(url="https://notifications.googleapis.com/email/redirect?t=x"), SimpleNamespace(client=None))
+assert result["level"] == "danger" and any("최종 도착 주소가" in r for r in result["reasons"]), result
+main.analyze_page, main.check_external_db, main.check_domain_trust = real
+print("도착 주소 Safe Browsing 확인 통과")
 
 # 위험한 주소는 페이지 분석으로 접속하지 않음
 from services.page_analyzer import is_risky_download

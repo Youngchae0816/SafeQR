@@ -41,7 +41,10 @@ RISKY_TLDS = {"tk", "ml", "ga", "cf", "gq"}
 # 값이 싸서 피싱에 자주 쓰이지만 정상 사이트도 많은 TLD (약하게 반영)
 CHEAP_TLDS = {
     "xyz", "top", "live", "icu", "click", "sbs", "cfd", "lol", "site", "online", "help",
-    "ink", "host", "vip", "buzz", "rest", "bond", "cyou", "monster", "quest", "support", "delivery"
+    "ink", "host", "vip", "buzz", "rest", "bond", "cyou", "monster", "quest", "support", "delivery",
+    # 2024년 한국 스미싱 악성 앱 유포 주소에 많이 쓰인 저가 TLD (KISA, Virus Bulletin 2025: .shop 18%)
+    "shop", "one", "yachts", "hair", "lat", "art", "run", "bar", "mom", "boats", "work", "life",
+    "beauty", "skin", "pics", "golf", "press", "wiki", "store", "world", "today", "pw",
 }
 
 # 내려받으면 바로 실행될 수 있는 파일 확장자 (악성코드 배포에 사용)
@@ -66,6 +69,11 @@ FREE_HOSTING = {
     "vercel.app", "pages.dev", "workers.dev", "netlify.app", "replit.app", "github.io", "gitlab.io",
     "blogspot.com", "web.app", "firebaseapp.com", "glitch.me", "onrender.com", "herokuapp.com",
     "weebly.com", "wixsite.com", "webflow.io", "square.site", "godaddysites.com", "notion.site",
+    "dothome.co.kr",  # 국내 무료 호스팅 (santanderweb.dothome.co.kr 같은 피싱)
+    "edgeone.dev", "htmlhost.co",  # 정부24·부고장·PASS 사칭, 네이버 로그인 피싱이 쓴 무료 호스팅 (urlscan 2026-10~11)
+    # 누구나 이름을 받아 쓰는 무료 서브도메인(동적 DNS) 서비스: sazaze.duckdns.org 네이버 로그인 피싱 등
+    "duckdns.org", "dpdns.org", "cloudns.biz", "home-webserver.de", "cloud-ip.cc", "sslip.io", "nip.io",
+    "homedns.org", "discloud.dev", "webador.com", "jimdofree.com", "typedream.app",  # 평가 세트 피싱 +4, 오탐 0
     "framer.website", "framer.app", "bolt.host", "craftum.io", "freepage.cc", "000webhostapp.com", "mybluehost.me",
     "sites.google.com", "storage.googleapis.com", "amazonaws.com", "r2.dev", "backblazeb2.com", "myqcloud.com",
 }
@@ -75,7 +83,9 @@ USER_CONTENT_PLATFORMS = FREE_HOSTING | {
     # URL 단축
     "bit.ly", "tinyurl.com", "rebrand.ly", "goo.su", "t.co", "is.gd", "cutt.ly",
     "naver.me", "me2.do", "han.gl", "url.kr",
-    "qrco.de", "q-r.to", "l.ead.me",  # QR 코드 생성기 단축 주소
+    "qrco.de", "q-r.to", "l.ead.me", "scanned.page",  # QR 코드 생성기 단축 주소
+    # 한국 스미싱 문자에 쓰인 단축 주소 (KISA, Virus Bulletin 2025)
+    "gourl.kr", "buly.kr", "alie.kr", "lihi.cc", "t.ly", "psce.pw", "ur0.jp", "go9.co",
     # 코드 저장소
     "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org",
     # 파일 공유 / 클라우드
@@ -259,7 +269,9 @@ def analyze_url_structure(url: str):
     # 11-1. 무료 호스팅 + 무작위 글자 이름 (Tran & Sovilj 2024 엔트로피 특징)
     # 모든 주소에 적용하면 google-analytics.com 같은 긴 정상 도메인이 걸려서 무료 호스팅에만 적용
     # (측정: 새 피싱 450개 탐지율 +9.3%p, 정상 1만 개 오탐 변화 0)
-    if host_in(host, FREE_HOSTING) and len(name) >= 8 and entropy(name) >= 3.3:
+    # 하이픈으로 나눈 조각마다 계산: 단어를 이어 붙인 이름(eomossam-delivery-game)은 길어서 엔트로피가 높게 나옴
+    # (측정: 한국 무료 호스팅 정상 페이지 오탐 -3, 피싱 -1 / 1,994개 평가 세트)
+    if host_in(host, FREE_HOSTING) and any(len(p) >= 8 and entropy(p) >= 3.3 for p in name.split("-")):
         score += 15
         reasons.append("무료 호스팅 주소의 이름이 무작위 글자로 되어 있습니다.")
 
@@ -287,6 +299,22 @@ def analyze_url_structure(url: str):
     if len([s for s in ext.subdomain.split(".") if s and s != "www"]) >= 3:
         score += 10
         reasons.append("주소 앞부분이 여러 단계로 깊게 이어져 있습니다.")
+
+    # 11-6. 글자와 숫자를 섞은 4글자 도메인 (도메인을 자동으로 대량 등록하는 RDGA 방식)
+    # 예) lzv.bn2g.yachts, efs.tg9m.one: 2024년 한국 기관 사칭 스미싱 (KISA, Virus Bulletin 2025)
+    # 논문 패턴이 {서브도메인}.{4글자}.{TLD}라서 서브도메인이 있을 때만 (mee6.xyz 같은 정상 사이트 제외)
+    has_subdomain = ext.subdomain.lower() not in ("", "www")
+    if has_subdomain and len(name) == 4 and any(c.isdigit() for c in name) and any(c.isalpha() for c in name):
+        score += 20
+        reasons.append("글자와 숫자를 섞은 짧은 도메인으로, 자동으로 대량 등록한 주소의 특징입니다.")
+
+    # 11-7. 워드프레스 내부 폴더에 있는 html 페이지
+    # wp-includes, wp-content에는 원래 프로그램 파일만 있음. 해킹한 사이트에 피싱 화면을 올리는 수법
+    # 예) centres-sociaux58.fr/wp-includes/indfx.html ("네이버 : 로그인" 복제)
+    path_lower = parsed_url.path.lower()
+    if re.search(r"/wp-(includes|content|admin)/", path_lower) and path_lower.endswith((".html", ".htm")):
+        score += 25
+        reasons.append("해킹된 홈페이지에 몰래 올린 페이지로 보입니다(워드프레스 내부 폴더의 html).")
 
     # 12. 다른 나라 글자로 영어 주소를 흉내 냈는지 검사
     if is_homograph(host):

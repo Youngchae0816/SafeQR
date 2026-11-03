@@ -5,15 +5,16 @@
 
 
 # 외부 검사 실패 보정 (Rafsanjani 2023 QsecR / 2024 "특징 평가 방법")
-# 외부 검사 결과가 없으면(응답 실패, 또는 무료 호스팅/IP라 도메인 나이를 조회하지 않음) 그 검사의 몫을 가장 강한 단서에 몰아줌
+# 외부 검사가 실패해서 결과가 없으면 그 검사의 몫을 가장 강한 단서에 몰아줌
 # 단서가 이 점수 이상일 때만, 실패한 검사 하나당 x1.3
-# (측정: 새 피싱 450개 +3개, 정상 844개 오탐 0)
+# 무료 호스팅·IP라서 도메인 나이를 일부러 조회하지 않은 경우는 실패로 세지 않음
+# (실패로 셌더니 pages.dev에 올린 정상 개인 프로젝트가 100점까지 올라감)
 MISSING_MIN_STRONG = 25
 MISSING_FACTOR = 1.3
 
 
 def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=None, page=None,
-                   compensate_missing=False):
+                   compensate_missing=False, domain_trust_skipped=False):
     """
     각 탐지 모듈의 결과를 받아 최종 위험도를 계산한다.
 
@@ -24,6 +25,7 @@ def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=Non
     page             : 페이지 내용(HTML) 분석 결과
     compensate_missing : 외부 검사를 시도했는데 실패한 경우에만 True
                          (실험에서 일부러 검사를 뺀 경우와 구분하기 위함)
+    domain_trust_skipped : 무료 호스팅·IP라 도메인 나이를 조회하지 않은 경우 True
     """
 
     # 최종 점수
@@ -34,7 +36,7 @@ def calculate_risk(lexical, brand_similarity, external_db=None, domain_trust=Non
 
     # 0. 외부 검사 실패 보정
     if compensate_missing:
-        missing = sum(x is None for x in (external_db, domain_trust, page))
+        missing = (external_db is None) + (domain_trust is None and not domain_trust_skipped) + (page is None)
         strongest = max((lexical or {}).get("score", 0), (brand_similarity or {}).get("score", 0))
         if missing and strongest >= MISSING_MIN_STRONG:
             total_score += round(strongest * (MISSING_FACTOR ** missing - 1))

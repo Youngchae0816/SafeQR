@@ -49,16 +49,22 @@ def get_registration_date(domain: str, suffix: str):
     return None
 
 
+# 도메인 나이를 조회할 대상인지
+# IP 주소이거나, 무료 호스팅·파일 공유 같은 사용자 콘텐츠 플랫폼이면 조회하지 않음
+# (godaddysites.com, netlify.app 같은 플랫폼 자체의 나이가 나와서 피싱도 "오래된 도메인"이 됨)
+def whois_applicable(url: str) -> bool:
+    ext = extract_domain(url)
+    host = (urlparse(url).hostname or "").lower()
+    return bool(ext.domain and ext.suffix and not ext.is_private and not is_user_content_platform(host))
+
+
 # 도메인 신뢰도 분석 (도메인이 만들어진 지 얼마나 됐는지)
 def check_domain_trust(url: str):
 
-    ext = extract_domain(url)
-
-    # IP 주소이거나, 무료 호스팅·파일 공유 같은 사용자 콘텐츠 플랫폼이면 조회하지 않음
-    # (godaddysites.com, netlify.app 같은 플랫폼 자체의 나이가 나와서 피싱도 "오래된 도메인"이 됨)
-    host = (urlparse(url).hostname or "").lower()
-    if not ext.domain or not ext.suffix or ext.is_private or is_user_content_platform(host):
+    if not whois_applicable(url):
         return None
+
+    ext = extract_domain(url)
 
     domain = f"{ext.domain}.{ext.suffix}"
 

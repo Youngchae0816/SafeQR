@@ -22,8 +22,8 @@ from models.schemas import URLRequest, URLAnalysisResponse
 from services.url_analyzer import analyze_url_structure
 from services.brand_similarity import analyze_brand_similarity
 from services.external_db import check_external_db
-from services.domain_trust import check_domain_trust
-from services.page_analyzer import analyze_page, apply_sparse_page_rule
+from services.domain_trust import check_domain_trust, whois_applicable
+from services.page_analyzer import analyze_page, apply_sparse_page_rule, registered_domain
 from services.risk_scorer import calculate_risk
 from services.url_validator import validate_url
 from services.error_handler import global_exception_handler
@@ -120,6 +120,14 @@ def analyze_url(request: URLRequest, http_request: Request):
     domain_trust_result = domain_trust_job.result()
     page_result = page_job.result()
 
+    # 다른 사이트로 이동했으면 도착 주소도 Safe Browsing에 조회 (원래 주소만 보면 단축 주소 뒤에 숨은 피싱을 놓침)
+    # 예) notifications.googleapis.com/... -> scanned.page/... (도착 주소만 위험 등록, 평가·검증 세트 205건 중 1건)
+    if page_result and registered_domain(page_result["final_url"]) != registered_domain(url):
+        final_db_result = check_external_db(page_result["final_url"])
+        if final_db_result and final_db_result["score"] > (external_db_result or {}).get("score", 0):
+            final_db_result["reasons"] = ["최종 도착 주소가 " + r for r in final_db_result["reasons"]]
+            external_db_result = final_db_result
+
     # 페이지 분석과 도메인 나이를 함께 봐야 하는 규칙 (둘 다 끝난 뒤 적용)
     apply_sparse_page_rule(page_result, domain_trust_result)
 
@@ -130,7 +138,8 @@ def analyze_url(request: URLRequest, http_request: Request):
         external_db=external_db_result,
         domain_trust=domain_trust_result,
         page=page_result,
-        compensate_missing=True
+        compensate_missing=True,
+        domain_trust_skipped=not whois_applicable(url),
     )
 
     # 안드로이드 앱으로 전달할 최종 결과

@@ -1,7 +1,8 @@
 import re
+import unicodedata
 from urllib.parse import urlparse
 
-from services.url_analyzer import extract_domain, CHEAP_TLDS, RISKY_TLDS
+from services.url_analyzer import extract_domain, host_in, CHEAP_TLDS, FREE_HOSTING, RISKY_TLDS
 
 
 # 비교할 주요 브랜드 목록
@@ -20,6 +21,10 @@ BRANDS = {
     "nonghyup": "NH농협",
     "epost": "우체국",
     "cjlogistics": "CJ대한통운",
+    "npay": "네이버페이",  # n-payefof.shop 같은 청첩장 사칭 스미싱 (KISA, Virus Bulletin 2025)
+    # 기관 사칭 스미싱 (efine-krs.sbs 과태료 사칭, /apk/nhis.apk 건강보험 사칭)
+    "efine": "교통민원24(이파인)",
+    "nhis": "국민건강보험",
     # 해외
     "paypal": "PayPal",
     "google": "Google",
@@ -52,6 +57,7 @@ BRANDS = {
     "scotia": "Scotiabank",
     "bancolombia": "Bancolombia",
     "xfinity": "Xfinity",
+    "allegro": "Allegro",  # 폴란드 쇼핑몰 (PhishTank 놓친 피싱 중 가장 많은 사칭 대상, 평가 세트 +16)
 }
 
 # 브랜드 이름과 정확히 같은 도메인은 이 주소 끝부분일 때만 공식으로 봄
@@ -75,6 +81,10 @@ OFFICIAL_DOMAINS = {
     "microsoftonline.us",
     "cdninstagram.com",
     "amazonaws.com",
+    "naverlabs.com",
+    "navercorp.com",
+    "navercloudtrust.com",
+    "nhis.or.kr",
     "kakaobank.com",
     "kakaopay.com",
     "kakaocorp.com",
@@ -95,6 +105,11 @@ OFFICIAL_DOMAINS = {
     "linkedin.cn",
     "binance.us",
     "dropbox.tech",
+    "allegro.pl",
+    "allegrolokalnie.pl",
+    "allegro.cz",
+    "allegro.sk",
+    "allegro.hu",
 }
 
 # 브랜드 이름에 붙어 나오면 사칭으로 볼 단어: paypalsecure, naver-login, webmail-service-xfinity
@@ -118,6 +133,47 @@ def lookalike_versions(text: str) -> list:
     )
     # 1은 l(엘)로도, i(아이)로도 쓰이고, i는 l(엘)처럼 보이므로 모두 확인
     return [base.replace("1", "l"), base.replace("1", "i"), base.replace("1", "l").replace("i", "l")]
+
+
+# 영어 글자와 똑같이 생긴 다른 나라 글자 (키릴·그리스 문자 등)
+# 예) xn--80ak6aa92e.com = "аррӏе.com" (화면에는 apple.com처럼 보임, IDN 호모그래프 공격)
+# ponytail: 자주 쓰이는 글자만 직접 정리, 더 넓게 막으려면 유니코드 confusables.txt 전체 사용
+HOMOGLYPHS = str.maketrans({
+    "а": "a", "с": "c", "ԁ": "d", "е": "e", "һ": "h", "і": "i", "ј": "j", "к": "k", "ӏ": "l",
+    "о": "o", "р": "p", "ԛ": "q", "ѕ": "s", "у": "y", "х": "x", "ԝ": "w", "ɡ": "g", "ı": "i",
+    "ɩ": "i", "α": "a", "ο": "o", "ν": "v", "ρ": "p", "τ": "t", "υ": "u", "ս": "u", "ո": "n",
+})
+
+
+# 한글 도메인에서 찾을 브랜드 이름: 쿠팡이벤트.com, 네이버고객센터.com
+HANGUL_BRANDS = {
+    "네이버": "Naver", "카카오": "Kakao", "삼성": "Samsung", "토스": "토스", "쿠팡": "쿠팡",
+    "국민은행": "KB국민은행", "신한": "신한", "우리은행": "우리은행", "하나은행": "하나은행", "농협": "NH농협",
+    "우체국": "우체국", "대한통운": "CJ대한통운", "이파인": "교통민원24(이파인)", "교통민원": "교통민원24(이파인)",
+    "건강보험": "국민건강보험",
+}
+HANGUL_BAIT_WORDS = ("로그인", "인증", "고객센터", "이벤트", "환불", "지원금", "결제", "배송", "택배", "조회", "과태료", "당첨")
+
+
+# 다국어 도메인(xn--)을 원래 글자로 바꾸기: xn--el3bt1r1wgj3c6o -> 쿠팡이벤트
+def idn_text(sld: str):
+    if not sld.startswith("xn--"):
+        return None
+    try:
+        return sld.encode("ascii").decode("idna")
+    except UnicodeError:
+        return None
+
+
+# 다국어 도메인을 영어 글자로 바꿔 보기. 흉내 낸 글자가 없으면 None
+def homoglyph_skeleton(sld: str):
+    text = idn_text(sld)
+    if not text:
+        return None
+    # é, à 같은 악센트 글자는 기본 글자로 (pàypal -> paypal)
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    skeleton = text.translate(HOMOGLYPHS)
+    return skeleton if skeleton.isascii() else None
 
 
 # 철자를 살짝 바꾼 오타인지 확인
@@ -176,7 +232,7 @@ def is_official(ext) -> bool:
 
 # 하나의 브랜드에 대해 사칭 수법을 확인하고 (벌점, 이유)를 반환
 # 여러 수법에 해당해도 가장 강한 하나만 반영
-def check_brand(brand: str, name: str, sld: str, subdomain: str, path: str):
+def check_brand(brand: str, name: str, sld: str, subdomain: str, path: str, free_hosting: bool = False):
 
     # 하이픈으로 나누어서 각각 검사: paypa1-secure-login -> paypa1, secure, login
     parts = sld.split("-")
@@ -224,12 +280,15 @@ def check_brand(brand: str, name: str, sld: str, subdomain: str, path: str):
 
     # 다른 단어 사이에 브랜드 이름을 섞은 경우: scotiadevicesecurelogin, soporte-santandermx2026
     # (apple -> pineapple 같은 일반 단어를 피하기 위해 6글자 이상 브랜드만)
-    if len(brand) >= 6 and brand in joined:
+    # 누구나 만드는 무료 호스팅 주소는 5글자(naver, kakao)도 검사: nidnaver787420666.weebly.com
+    embed_ok = len(brand) >= 6 or (free_hosting and len(brand) == 5 and brand != "apple")
+    if embed_ok and brand in joined:
         return 20, f"도메인 안에 {name} 이름이 섞여 있습니다."
 
     # 서브도메인에 브랜드 이름: apple.sign-cloud.live, facebookbonus.example.com, verificacionoutlook.freepage.cc
     sub_words = re.split(r"[.-]", subdomain)
-    if any(w == brand or has_bait_word(w, brand) or (len(brand) >= 6 and brand in w) for w in sub_words):
+    embed_ok = len(brand) >= 6 or (free_hosting and len(brand) == 5 and brand != "apple")
+    if any(w == brand or has_bait_word(w, brand) or (embed_ok and brand in w) for w in sub_words):
         return 20, f"공식 도메인이 아닌데 앞부분에 {name} 이름을 넣었습니다."
 
     # 주소 경로에 브랜드 이름: example.com/amazon/login.php, xxx.github.io/Netflix-Clone
@@ -252,12 +311,28 @@ def analyze_brand_similarity(url: str) -> dict:
     sld = ext.domain.lower()
     subdomain = ext.subdomain.lower()
     path = urlparse(url).path.lower()
+    free_hosting = host_in((urlparse(url).hostname or "").lower(), FREE_HOSTING)
 
     score = 0
     reasons = []
 
+    # 다른 나라 글자로 브랜드 이름처럼 보이게 만든 도메인: аррӏе.com
+    skeleton = homoglyph_skeleton(sld)
+    if skeleton:
+        for brand, name in BRANDS.items():
+            if check_brand(brand, name, skeleton, subdomain, "", free_hosting)[0]:
+                return {"score": 40, "reasons": [f"다른 나라 글자로 {name} 이름처럼 보이게 만든 도메인입니다."]}
+
+    # 한글 도메인에 브랜드 이름: 쿠팡이벤트.com (미끼 단어까지 붙으면 더 강하게)
+    hangul = idn_text(sld) or ""
+    for word, name in HANGUL_BRANDS.items():
+        if word in hangul:
+            if any(b in hangul for b in HANGUL_BAIT_WORDS):
+                return {"score": 30, "reasons": [f"{name} 이름에 '로그인', '고객센터' 같은 단어를 붙인 한글 도메인입니다."]}
+            return {"score": 20, "reasons": [f"공식 도메인이 아닌데 {name} 이름을 쓴 한글 도메인입니다."]}
+
     for brand, name in BRANDS.items():
-        brand_score, reason = check_brand(brand, name, sld, subdomain, path)
+        brand_score, reason = check_brand(brand, name, sld, subdomain, path, free_hosting)
         if brand_score:
             score += brand_score
             reasons.append(reason)
